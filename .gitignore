@@ -1,0 +1,6 @@
+// Ardunio files with sensative information ex. wifi passwords
+climate.ino
+base.ino
+
+
+.DS_Store
