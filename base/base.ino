@@ -1,27 +1,21 @@
-#include "DHT.h"
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <HTTPClient.h>
 #include <ArduinoJson.h>
-#define DHTPIN 2     // Pin connected to DATA pin of the DHT22
-#define DHTTYPE DHT22   // DHT 22 (AM2302)
-
-DHT dht(DHTPIN, DHTTYPE);
-WiFiClient espClient;
-PubSubClient client(espClient);
+#include <config.h>
 
 //Device Info
-const char* device_name = "DEVICE_NAME";
-const char* device_uuid = "DEVICE_UUID";
+const char* device_name = DEVICE_NAME;
+const char* device_uuid = DEVICE_UUID;
 
 // MQTT Broker details
-const char* mqtt_server = "MQTT_BROKER_IP";
-const int mqtt_port = 1883;
+const char* mqtt_server = MQTT_SERVER;
+const int mqtt_port = MQTT_PORT;
 const char* mqtt_topic_heartbeat = "devices/heartbeat";
-const char* mqtt_topic_climate = "devices/climate";
 
 // WiFi credentials
-const char* ssid = "WIFI_SSID";
-const char* password = "WIFI_PASSWORD";
+const char* ssid = WIFI_SSID;
+const char* password = WIFI_PASSWORD;
 
 struct HeartbeatUpdate {
   const char* device_name;
@@ -31,14 +25,6 @@ struct HeartbeatUpdate {
   int signal_strength;      // Wi-Fi signal strength in dBm
   unsigned long uptime;     // Uptime in seconds
   String timestamp;         
-};
-
-struct ClimateUpdate {
-  const char* device_name;
-  const char* device_uuid;
-  float temperature;
-  float humidity;
-  String timestamp;
 };
 
 void setup_wifi() {
@@ -126,36 +112,6 @@ void send_heartbeat_update() {
   } 
   else {
     Serial.println("Failed to send heartbeat update");
-  }
-}
-
-void send_climate_update() {
-  char jsonBuffer[512];
-  ClimateUpdate update = {
-    device_name,
-    device_uuid,
-    dht.readTemperature(true),
-    dht.readHumidity(),
-    generate_timestamp()
-  };
-
-  // Serialize the struct into JSON
-  StaticJsonDocument<200> jsonDoc;
-  jsonDoc["device_name"] = update.device_name;
-  jsonDoc["device_uuid"] = update.device_uuid;
-  jsonDoc["temperature"] = update.temperature;
-  jsonDoc["humidity"] = update.humidity;
-  jsonDoc["timestamp"] = update.timestamp;
-
-  serializeJson(jsonDoc, jsonBuffer);
-
-  // Publish to MQTT (assumes client setup already exists)
-  if (client.publish(mqtt_topic_climate, jsonBuffer)) {
-    Serial.println("Climate update sent:");
-    Serial.println(jsonBuffer);
-  } 
-  else {
-    Serial.println("Failed to send climate update");
   }
 }
 

@@ -1,0 +1,13 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+#define WIFI_SSID "WIFI_SSID"
+#define WIFI_PASSWORD "WIFI_PASSWORD"
+
+#define MQTT_SERVER "MQTT_SERVER"
+#define MQTT_PORT 1883 // Default MQTT port
+
+#define DEVICE_NAME "DEVICE_NAME"
+#define DEVICE_UUID "DEVICE_UUID"
+
+#endif
