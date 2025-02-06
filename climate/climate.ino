@@ -20,6 +20,7 @@ const char* mqtt_server = MQTT_SERVER;
 const int mqtt_port = MQTT_PORT;
 const char* mqtt_topic_heartbeat = "devices/heartbeat";
 const char* mqtt_topic_climate = "devices/climate";
+const int mqtt_keep_alive = 20; // 20 secs
 
 // WiFi credentials
 const char* ssid = WIFI_SSID;
@@ -58,7 +59,7 @@ void setup_wifi() {
 
 void setup_mqtt() {
   client.setServer(mqtt_server, mqtt_port);
-  client.setKeepAlive(60); // 60 seconds
+  client.setKeepAlive(mqtt_keep_alive);
 
   connect_mqtt();
 }
@@ -67,7 +68,30 @@ void connect_mqtt() {
   while (!client.connected()) {
     Serial.println("Connecting to MQTT...\n");
 
-    if (client.connect(device_name)) {
+    char last_will_message[512];
+    HeartbeatUpdate last_will_update = {
+      device_name,
+      device_uuid,
+      false,
+      ESP.getFreeHeap(),
+      WiFi.RSSI(),
+      millis() / 1000,
+      generate_timestamp()
+    };
+
+    // Serialize the struct into JSON
+    StaticJsonDocument<200> jsonDoc;
+    jsonDoc["device_name"] = last_will_update.device_name;
+    jsonDoc["device_uuid"] = last_will_update.device_uuid;
+    jsonDoc["online"] = last_will_update.online;
+    jsonDoc["free_memory"] = last_will_update.free_memory;
+    jsonDoc["signal_strength"] = last_will_update.signal_strength;
+    jsonDoc["uptime"] = last_will_update.uptime;
+    jsonDoc["timestamp"] = last_will_update.timestamp;
+
+    serializeJson(jsonDoc, last_will_message);
+
+    if (client.connect(device_name, mqtt_topic_heartbeat, 0, true, last_will_message)) {
       Serial.println("Connected to MQTT broker!");
 
       send_heartbeat_update();
