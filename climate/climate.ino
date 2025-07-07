@@ -1,215 +1,211 @@
 #include "DHT.h"
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
+#define MQTT_VERSION MQTT_VERSION_3_1_1 // needed in order to have successful connection with HiveMQ via port 8883
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <config.h>
 
-#define DHTPIN 2     // Pin connected to DATA pin of the DHT22
-#define DHTTYPE DHT22   // DHT 22 (AM2302)
+#define DHTPIN SENSOR_PIN
+#define DHTTYPE DHT22
 
 DHT dht(DHTPIN, DHTTYPE);
-WiFiClient espClient;
+WiFiClientSecure espClient;
 PubSubClient client(espClient);
 
-//Device Info
-const char* device_name = DEVICE_NAME;
-const char* device_uuid = DEVICE_UUID;
+const int baud_rate = BAUD_RATE;
 
-// MQTT Broker details
+// Device Info
+const char* device_name = DEVICE_NAME;
+const char* device_id = DEVICE_UUID;
+
+// MQTT
 const char* mqtt_server = MQTT_SERVER;
 const int mqtt_port = MQTT_PORT;
-const char* mqtt_topic_heartbeat = "devices/heartbeat";
-const char* mqtt_topic_climate = "devices/climate";
-const int mqtt_keep_alive = 20; // 20 secs
+const char* mqtt_user = MQTT_USERNAME;
+const char* mqtt_password = MQTT_PASSWORD;
+const char* mqtt_topic = MQTT_TOPIC;
+const int mqtt_keep_alive = 20;
 
-// WiFi credentials
+// WiFi
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
 
 struct HeartbeatUpdate {
-  const char* device_name;
-  const char* device_uuid;
   bool online;
-  int free_memory;          // Free memory in bytes
-  int signal_strength;      // Wi-Fi signal strength in dBm
-  unsigned long uptime;     // Uptime in seconds
-  String timestamp;         
+  uint32_t free_memory;
+  int signal_strength;
+  unsigned long uptime;
 };
 
 struct ClimateUpdate {
-  const char* device_name;
-  const char* device_uuid;
   float temperature;
   float humidity;
-  String timestamp;
 };
 
+// === Setup WiFi ===
 void setup_wifi() {
-  WiFi.begin(ssid, password);
-  Serial.println("Connecting to WiFi");
+  Serial.println(ssid);
+  Serial.println(password);
 
+  WiFi.begin(ssid, password);
+  Serial.println("Connecting to WiFi...");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
-
     Serial.print(".");
   }
-
-  Serial.println("Connected to WiFi!");
+  Serial.println("\nConnected to WiFi!");
 }
 
-void setup_mqtt() {
-  client.setServer(mqtt_server, mqtt_port);
-  client.setKeepAlive(mqtt_keep_alive);
-
-  connect_mqtt();
-}
-
+// === Connect MQTT ===
 void connect_mqtt() {
   while (!client.connected()) {
-    Serial.println("Connecting to MQTT...\n");
+    Serial.println("Connecting to MQTT...");
 
-    char last_will_message[512];
-    HeartbeatUpdate last_will_update = {
-      device_name,
-      device_uuid,
+    char will_message[512];
+    HeartbeatUpdate last_will = {
       false,
       ESP.getFreeHeap(),
       WiFi.RSSI(),
-      millis() / 1000,
-      generate_timestamp()
+      millis() / 1000
     };
 
-    // Serialize the struct into JSON
-    StaticJsonDocument<200> jsonDoc;
-    jsonDoc["device_name"] = last_will_update.device_name;
-    jsonDoc["device_uuid"] = last_will_update.device_uuid;
-    jsonDoc["online"] = last_will_update.online;
-    jsonDoc["free_memory"] = last_will_update.free_memory;
-    jsonDoc["signal_strength"] = last_will_update.signal_strength;
-    jsonDoc["uptime"] = last_will_update.uptime;
-    jsonDoc["timestamp"] = last_will_update.timestamp;
+    String ts = generate_timestamp();
+    JsonDocument doc;
+    doc["event_type"] = "device-disconnected";
+    doc["device_id"] = device_id;
+    doc["device_name"] = device_name;
+    doc["timestamp"] = ts;
 
-    serializeJson(jsonDoc, last_will_message);
+    JsonObject payload = doc["payload"].to<JsonObject>();
+    payload["online"] = last_will.online;
+    payload["free_memory"] = last_will.free_memory;
+    payload["signal_strength"] = last_will.signal_strength;
+    payload["uptime"] = last_will.uptime;
 
-    if (client.connect(device_name, mqtt_topic_heartbeat, 0, true, last_will_message)) {
-      Serial.println("Connected to MQTT broker!");
+    serializeJson(doc, will_message);
 
+    if (client.connect(device_name, mqtt_user, mqtt_password, mqtt_topic, 0, true, will_message)) {
+      Serial.println("Connected to MQTT broker");
       send_heartbeat_update();
-    } 
-    else {
-      Serial.println("Failed to connect, rc=");
+    } else {
+      Serial.print("Failed, rc=");
       Serial.println(client.state());
-
-      delay(5000);  // Retry every 5 seconds
+      delay(5000);
     }
   }
 }
 
+// === Setup MQTT ===
+void setup_mqtt() {
+  espClient.setInsecure();
+  client.setSocketTimeout(15);
+  client.setBufferSize(512);   
+  client.setServer(mqtt_server, mqtt_port);
+  client.setKeepAlive(mqtt_keep_alive);
+  connect_mqtt();
+}
+
+// === NTP Sync ===
 void synchronize_time() {
-  // Synchronize time with NTP server
   configTime(0, 0, "pool.ntp.org", "time.nist.gov");
   Serial.println("Synchronizing time...");
-
-  // Wait for the time to be set
   struct tm timeinfo;
-
   while (!getLocalTime(&timeinfo)) {
     delay(500);
     Serial.print(".");
   }
-
   Serial.println("\nTime synchronized");
 }
 
-void send_heartbeat_update() {
-  char jsonBuffer[512];
-  HeartbeatUpdate update = {
-    device_name,
-    device_uuid,
-    true,
-    ESP.getFreeHeap(),
-    WiFi.RSSI(),
-    millis() / 1000,
-    generate_timestamp()
-  };
-
-  // Serialize the struct into JSON
-  StaticJsonDocument<200> jsonDoc;
-  jsonDoc["device_name"] = update.device_name;
-  jsonDoc["device_uuid"] = update.device_uuid;
-  jsonDoc["online"] = update.online;
-  jsonDoc["free_memory"] = update.free_memory;
-  jsonDoc["signal_strength"] = update.signal_strength;
-  jsonDoc["uptime"] = update.uptime;
-  jsonDoc["timestamp"] = update.timestamp;
-
-  serializeJson(jsonDoc, jsonBuffer);
-
-  // Publish to MQTT (assumes client setup already exists)
-  if (client.publish(mqtt_topic_heartbeat, jsonBuffer)) {
-    Serial.println("Heartbeat update sent:");
-    Serial.println(jsonBuffer);
-  } 
-  else {
-    Serial.println("Failed to send heartbeat update");
-  }
-}
-
-void send_climate_update() {
-  char jsonBuffer[512];
-  ClimateUpdate update = {
-    device_name,
-    device_uuid,
-    dht.readTemperature(true),
-    dht.readHumidity(),
-    generate_timestamp()
-  };
-
-  // Serialize the struct into JSON
-  StaticJsonDocument<200> jsonDoc;
-  jsonDoc["device_name"] = update.device_name;
-  jsonDoc["device_uuid"] = update.device_uuid;
-  jsonDoc["temperature"] = update.temperature;
-  jsonDoc["humidity"] = update.humidity;
-  jsonDoc["timestamp"] = update.timestamp;
-
-  serializeJson(jsonDoc, jsonBuffer);
-
-  // Publish to MQTT (assumes client setup already exists)
-  if (client.publish(mqtt_topic_climate, jsonBuffer)) {
-    Serial.println("Climate update sent:");
-    Serial.println(jsonBuffer);
-  } 
-  else {
-    Serial.println("Failed to send climate update");
-  }
-}
-
+// === Timestamp Generator ===
 String generate_timestamp() {
   struct tm timeinfo;
   if (getLocalTime(&timeinfo)) {
     char timestamp[30];
     strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", &timeinfo);
-
     return String(timestamp);
-  } 
-  else {
-    return "Failed to get time";
+  }
+  return "0000-00-00T00:00:00";
+}
+
+// === Send Heartbeat ===
+void send_heartbeat_update() {
+  char jsonBuffer[512];
+  HeartbeatUpdate hb = {
+    true,
+    ESP.getFreeHeap(),
+    WiFi.RSSI(),
+    millis() / 1000
+  };
+
+  String ts = generate_timestamp();
+  JsonDocument doc;
+  doc["event_type"] = "device-heartbeat";
+  doc["device_id"] = device_id;
+  doc["device_name"] = device_name;
+  doc["timestamp"] = ts;
+
+  JsonObject payload = doc["payload"].to<JsonObject>();
+  payload["online"] = hb.online;
+  payload["free_memory"] = hb.free_memory;
+  payload["signal_strength"] = hb.signal_strength;
+  payload["uptime"] = hb.uptime;
+
+  serializeJson(doc, jsonBuffer);
+
+  if (client.publish(mqtt_topic, jsonBuffer)) {
+    Serial.println("Heartbeat update sent:");
+    Serial.println(jsonBuffer);
+  } else {
+    Serial.println("Failed to send heartbeat update");
   }
 }
 
+// === Send Climate Reading ===
+void send_climate_update() {
+  char jsonBuffer[512];
+  float temp = dht.readTemperature(true);
+  float hum = dht.readHumidity();
+
+  if (isnan(temp) || isnan(hum)) {
+    Serial.println("Failed to read from DHT sensor");
+    return;
+  }
+
+  String ts = generate_timestamp();
+  JsonDocument doc;
+  doc["event_type"] = "device-sensor-readings";
+  doc["device_id"] = device_id;
+  doc["device_name"] = device_name;
+  doc["timestamp"] = ts;
+
+  JsonObject payload = doc["payload"].to<JsonObject>();
+  payload["temperature"] = temp;
+  payload["humidity"] = hum;
+
+  serializeJson(doc, jsonBuffer);
+
+  if (client.publish(mqtt_topic, jsonBuffer)) {
+    Serial.println("Climate update sent:");
+    Serial.println(jsonBuffer);
+  } else {
+    Serial.println("Failed to send climate update");
+  }
+}
+
+// === Main Setup ===
 void setup() {
-  // put your setup code here, to run once:
-  Serial.begin(115200);
+  Serial.begin(baud_rate);
   dht.begin();
   setup_wifi();
   synchronize_time();
   setup_mqtt();
 }
 
+// === Main Loop ===
 void loop() {
-  // put your main code here, to run repeatedly:
-  if(client.connected()) {
+  if (client.connected()) {
     send_climate_update();
     delay(10000);
   } else {
