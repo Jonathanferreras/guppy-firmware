@@ -10,13 +10,13 @@
 #define DHTTYPE DHT22
 
 DHT dht(DHTPIN, DHTTYPE);
-WiFiClientSecure espClient;
-PubSubClient client(espClient);
+WiFiClientSecure wifiClient;
+PubSubClient mqttClient(wifiClient);
 
 // --- Forward Declarations ---
 void mqtt_callback(char* topic, byte* payload, unsigned int length);
 char* generate_auth_payload();
-char* generate_heartbeat_update(bool disconnected = false);
+char* generate_heartbeat_update(bool isOnline);
 char* generate_climate_update();
 
 // Device Info
@@ -73,25 +73,25 @@ void setup_wifi() {
 }
 
 void setup_mqtt() {
-  espClient.setInsecure();
-  client.setSocketTimeout(15);
-  client.setBufferSize(512);
-  client.setServer(mqtt_server, mqtt_port);
-  client.setCallback(mqtt_callback);
-  client.setKeepAlive(mqtt_keep_alive);
+  wifiClient.setInsecure();
+  mqttClient.setSocketTimeout(15);
+  mqttClient.setBufferSize(512);
+  mqttClient.setServer(mqtt_server, mqtt_port);
+  mqttClient.setCallback(mqtt_callback);
+  mqttClient.setKeepAlive(mqtt_keep_alive);
   connect_mqtt();
 }
 
 void connect_mqtt() {
-  while (!client.connected()) {
+  while (!mqttClient.connected()) {
     Serial.println("Connecting to MQTT...");
-    if (client.connect(device_name, mqtt_user, mqtt_password, mqtt_events_topic, 0, true, generate_heartbeat_update(true))) {
+    if (mqttClient.connect(device_name, mqtt_user, mqtt_password, mqtt_events_topic, 0, false, generate_heartbeat_update(false))) {
       Serial.println("✅ Connected to MQTT broker");
-      client.publish(mqtt_events_topic, generate_auth_payload());
-      client.subscribe(mqtt_device_topic.c_str());
+      mqttClient.publish(mqtt_events_topic, generate_auth_payload());
+      mqttClient.subscribe(mqtt_device_topic.c_str());
     } else {
       Serial.print("❌ Failed, rc=");
-      Serial.println(client.state());
+      Serial.println(mqttClient.state());
       delay(5000);
     }
   }
@@ -102,7 +102,7 @@ void connect_mqtt() {
   const unsigned long timeout = 15000;
 
   while (!has_permission && millis() - start < timeout) {
-    client.loop();
+    mqttClient.loop();
     delay(100);
   }
 
@@ -110,7 +110,7 @@ void connect_mqtt() {
     Serial.println("🔓 Authentication confirmed.");
   } else {
     Serial.println("⛔ Authentication timed out. Disconnecting...");
-    client.disconnect();
+    mqttClient.disconnect();
   }
 }
 
@@ -133,7 +133,7 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
     has_permission = true;
 
     Serial.println("📤 Sending heartbeat...");
-    client.publish(mqtt_events_topic, generate_heartbeat_update());
+    mqttClient.publish(mqtt_events_topic, generate_heartbeat_update(true));
   } else {
     Serial.println("⚠️ Unknown payload. Authentication not granted.");
   }
@@ -181,10 +181,10 @@ char* generate_auth_payload() {
   return jsonBuffer;
 }
 
-char* generate_heartbeat_update(bool disconnected) {
+char* generate_heartbeat_update(bool isOnline) {
   static char jsonBuffer[512];
   HeartbeatUpdate heartbeat = {
-    true,
+    isOnline,
     ESP.getFreeHeap(),
     WiFi.RSSI(),
     millis() / 1000
@@ -202,7 +202,6 @@ char* generate_heartbeat_update(bool disconnected) {
   payload["free_memory"] = heartbeat.free_memory;
   payload["signal_strength"] = heartbeat.signal_strength;
   payload["uptime"] = heartbeat.uptime;
-  payload["disconnected"] = disconnected;
 
   serializeJson(doc, jsonBuffer);
   return jsonBuffer;
@@ -244,11 +243,11 @@ void setup() {
 }
 
 void loop() {
-  if (!client.connected()) {
+  if (!mqttClient.connected()) {
     connect_mqtt();
   }
 
-  client.loop();
+  mqttClient.loop();
 
   if (has_permission) {
     static unsigned long lastSent = 0;
@@ -257,7 +256,7 @@ void loop() {
     if (now - lastSent >= 10000) {
       char* climate_payload = generate_climate_update();
       if (climate_payload != nullptr) {
-        client.publish(mqtt_events_topic, climate_payload);
+        mqttClient.publish(mqtt_events_topic, climate_payload);
         Serial.println("📤 Published climate data");
       }
       lastSent = now;
